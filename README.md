@@ -16,7 +16,7 @@ GROQ_API_KEY=your_api_key_here
 python ingest.py
 
 4. Start the backend API:
-uvicorn api:app --reload
+uvicorn rag_api:app --reload
 
 5. Start the frontend UI:
 streamlit run streamlit_app.py
