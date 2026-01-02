@@ -13,6 +13,8 @@ from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 
+RELEVANCE_LENGTH_THRESHOLD = 80
+
 # Logging
 logging.basicConfig(
     level=logging.INFO,
@@ -24,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Environment variables (load from .env in production)
 os.getenv("TOKENIZERS_PARALLELISM")
-GROQ_API_KEY = os.environ("GROQ_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # Text normalization for unstructured documents
 def normalize_plain_text(text):
@@ -111,8 +113,7 @@ def split_documents(documents, structured, chunk_size = 500, chunk_overlap = 150
                         page_content=text,
                         metadata={**doc.metadata}  # copy metadata
                     )
-                )
-
+                )            
     else:
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
@@ -225,7 +226,7 @@ class RAGRetriever:
         try:
             query_emb = self.embedder.embed([query])[0]
 
-            # Stage 1: Semantic search
+            # Semantic search
             results = self.store.collection.query(
                 query_embeddings=[query_emb.tolist()],
                 n_results=initial_k,
@@ -236,7 +237,7 @@ class RAGRetriever:
                 logger.warning(f"No documents retrieved for query: {query}")
                 return []
 
-            # Stage 2: Rerank
+            # Rerank
             docs = []
             for text, meta, distance in zip(
                 results["documents"][0],
@@ -292,95 +293,124 @@ def extract_citations(retrieved_docs):
 
 # RAG with Memory
 def rag_with_memory(
-    query,
+    query: str,
     retriever,
-    llm: ChatGroq,
-    chat_history,
-    query_rewriter = None,
-    initial_k = 20,
-    top_k = 5
+    llm,
+    chat_history: list,
+    query_rewriter=None,
+    initial_k=20,
+    top_k=5
 ):
     """
-    RAG with conversation memory and query rewriting.
-    
-    Steps:
-    1. Rewrite query using chat history for better retrieval
-    2. Retrieve relevant documents
-    3. Generate answer using retrieved context + conversation history
+    Production-grade RAG with memory and LLM-based grounding verification.
     """
-    
-    # Step 1: Rewrite query if we have chat history
+
+    # Query rewriting (optional)
     retrieval_query = query
     if query_rewriter and chat_history:
         retrieval_query = query_rewriter.rewrite_query(query, chat_history)
-    
-    # Step 2: Retrieve documents
-    retrieved = retriever.retrieve(retrieval_query, initial_k=initial_k, top_k=top_k)
 
-    # Step 3: Handle no retrieval case
-    if not retrieved:
-        logger.warning(f"No documents retrieved, using LLM fallback for: {query}")
-        
-        # Build conversation context
-        conversation_context = _build_conversation_context(chat_history)
-        
-        fallback_prompt = f"""You are an EV assistant. No relevant documents were found in the knowledge base.
+    # Intent detection
+    intent_prompt = f"""
+Classify the user query.
 
-{conversation_context}
+- Greetings, small talk, or meta questions → GENERAL
+- Questions requiring document knowledge → RAG
+
+Respond with ONLY one word.
+
+Query: "{query}"
+"""
+    try:
+        intent = llm.invoke([HumanMessage(content=intent_prompt)]).content.strip().upper()
+    except Exception:
+        intent = "RAG"
+
+    # General chat (no retrieval)
+    if intent == "GENERAL":
+        general_prompt = f"""
+You are a friendly EV assistant.
+Respond naturally. Do NOT cite sources.
+
+Conversation History:
+{_build_conversation_context(chat_history)}
 
 User Question: {query}
+"""
+        answer = llm.invoke([HumanMessage(content=general_prompt)]).content.strip()
 
-Provide a helpful response. If you don't know the answer, say so clearly and suggest what information would help."""
-        
-        answer = llm.invoke([HumanMessage(content=fallback_prompt)]).content.strip()
-        history = chat_history + [
-            {"role": "user", "content": query},
-            {"role": "assistant", "content": answer, "citations": []}
+        updated_history = chat_history + [
+            {"role": "user", "content": query, "citations": []},
+            {"role": "assistant", "content": answer, "citations": []},
         ]
-        return answer, history, []
+        return answer, updated_history, []
 
-    # Step 4: Generate answer with context
-    citations = extract_citations(retrieved)
-    context = "\n\n---\n\n".join([
-        f"[Source: {d['metadata']['source']}, Page {d['metadata']['page']}]\n{d['content']}"
-        for d in retrieved
-    ])
-    
-    # Build conversation context
-    conversation_context = _build_conversation_context(chat_history)
-    
-    # Improved prompt with memory
-    prompt = f"""You are an expert EV assistant. Answer the user's question using ONLY the provided context and conversation history.
+    # Step 3: Retrieve documents
+    try:
+        retrieved_docs = retriever.retrieve(
+            retrieval_query,
+            initial_k=initial_k,
+            top_k=top_k,
+        )
+    except Exception:
+        retrieved_docs = []
 
-{conversation_context}
+    # Relevance filtering
+    relevant_docs = [
+        d for d in retrieved_docs
+        if d.get("content") and len(d["content"].strip()) >= RELEVANCE_LENGTH_THRESHOLD
+    ]
+
+    # If no context found, then fallback
+    if not relevant_docs:
+        answer = "I don't have enough information in the knowledge base to answer this."
+        updated_history = chat_history + [
+            {"role": "user", "content": query, "citations": []},
+            {"role": "assistant", "content": answer, "citations": []},
+        ]
+        return answer, updated_history, []
+
+    # Generate context
+    context = build_context(relevant_docs, max_tokens=1200)
+    print("Context for the query: ", context)
+
+
+    rag_prompt = f"""
+You are an expert EV assistant.
+
+Use ONLY the provided context to answer the question.
+
+Conversation History:
+{_build_conversation_context(chat_history)}
 
 Retrieved Context:
 {context}
 
-User Question: {query}
+User Question:
+{query}
 
-Instructions:
-- Answer based ONLY on the provided context
-- If the context doesn't contain the answer, say "I don't have enough information in the knowledge base to answer this."
-- Be specific and cite relevant details
-- If referring to previous conversation, acknowledge it naturally
-- Keep answers concise but complete
+Rules:
+- Answer strictly from the context
+- If the answer is not present, say:
+  "I don't have enough information in the knowledge base to answer this."
 
-Answer:"""
+Answer:
+"""
+    answer = llm.invoke([HumanMessage(content=rag_prompt)]).content.strip()
 
-    try:
-        answer = llm.invoke([HumanMessage(content=prompt)]).content.strip()
-        logger.info(f"Generated answer with {len(citations)} citations")
-    except Exception as e:
-        logger.error(f"LLM generation failed: {e}")
-        answer = "I apologize, but I encountered an error generating a response. Please try again."
-    
-    history = chat_history + [
-        {"role": "user", "content": query},
-        {"role": "assistant", "content": answer, "citations": citations}
+    # Grounding verification
+    grounded = is_answer_grounded(llm, query, answer, context)
+
+    # Provide citations if grounded only    
+    citations = extract_citations(relevant_docs) if grounded else []
+
+    # Update memory
+    updated_history = chat_history + [
+        {"role": "user", "content": query, "citations": []},
+        {"role": "assistant", "content": answer, "citations": citations},
     ]
-    
-    return answer, history, citations
+
+    return answer, updated_history, citations
 
 
 def _build_conversation_context(chat_history, max_turns = 3):
@@ -416,3 +446,76 @@ def get_query_rewriter(groq_api_key: str):
         max_tokens=256,  
     )
     return QueryRewriter(llm)
+
+def is_answer_grounded(llm, question: str, answer: str, context: str) -> bool:
+    """
+    Uses the LLM to verify whether the answer is strictly supported
+    by the retrieved context.
+    """
+
+    prompt = f"""
+You are verifying answer grounding in a RAG system.
+
+Question:
+{question}
+
+Answer:
+{answer}
+
+Retrieved Context:
+{context}
+
+Is the answer FULLY supported by the retrieved context?
+
+Respond with ONLY one word:
+GROUNDED or NOT_GROUNDED
+"""
+    try:
+        result = llm.invoke([HumanMessage(content=prompt)]).content.strip().upper()
+        return result == "GROUNDED"
+    except Exception:
+        return False
+    
+def build_context(
+    docs,
+    max_tokens=1200,
+    approx_tokens_per_char=0.25
+):
+    """
+    Minimal, robust context builder:
+    - Deduplicates identical chunks
+    - Adds inline metadata
+    - Enforces a token budget
+    """
+
+    seen_contents = set()
+    context_blocks = []
+    total_tokens = 0
+
+    for d in docs:
+        content = d["content"].strip()
+
+        # 1️⃣ Deduplicate identical chunks
+        if content in seen_contents:
+            continue
+        seen_contents.add(content)
+
+        # 2️⃣ Inline metadata
+        source = d["metadata"].get("source", "unknown")
+        page = d["metadata"].get("page", "N/A")
+
+        block = (
+            f"[Source: {source} | Page: {page}]\n"
+            f"{content}"
+        )
+
+        # 3️⃣ Token budget check (cheap approximation)
+        block_tokens = int(len(block) * approx_tokens_per_char)
+        if total_tokens + block_tokens > max_tokens:
+            break
+
+        context_blocks.append(block)
+        total_tokens += block_tokens
+
+    return "\n\n".join(context_blocks)
+
