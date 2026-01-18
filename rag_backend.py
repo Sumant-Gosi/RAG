@@ -12,8 +12,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHea
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
-
-RELEVANCE_LENGTH_THRESHOLD = 80
+from docling.document_converter import DocumentConverter
 
 # Logging
 logging.basicConfig(
@@ -25,7 +24,6 @@ logger = logging.getLogger(__name__)
 
 
 # Environment variables (load from .env in production)
-os.getenv("TOKENIZERS_PARALLELISM")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # Text normalization for unstructured documents
@@ -33,7 +31,7 @@ def normalize_plain_text(text):
     lines = text.split("\n")
     merged = []
 
-    Max_linelength = 80  #Chosen based on the average line length in the training doc.
+    Max_linelength = 80  # Based on an average line length in the training data
     End_punc = (".", "?", "!")
 
     for line in lines:
@@ -63,7 +61,7 @@ def normalize_markdown(text):
 # PDF Processing
 def process_all_pdfs(pdf_dir, structured):
 
-    documents = [] # To store all processed documents
+    documents = [] 
     for pdf_path in Path(pdf_dir).rglob("*.pdf"):
         try:
             loader = PyMuPDFLoader(str(pdf_path))
@@ -84,9 +82,26 @@ def process_all_pdfs(pdf_dir, structured):
                 "page": page.metadata.get("page"),
             })
 
-        documents.append(page)
+            documents.append(page)
 
     return documents
+
+# # PDF Processing using Docling
+# def process_all_pdfs_docling(pdf_dir):
+#     converter = DocumentConverter()
+#     documents = []
+    
+#     for pdf_path in Path(pdf_dir).rglob("*.pdf"):
+#         result = converter.convert(str(pdf_path))
+#         markdown = result.document.export_to_markdown()
+        
+#         documents.append(Document(
+#             page_content=markdown,
+#             metadata={"source": pdf_path.name}
+#         ))
+    
+#     return documents
+
 
 # Split the documents into chunks
 def split_documents(documents, structured, chunk_size = 500, chunk_overlap = 150):
@@ -110,8 +125,8 @@ def split_documents(documents, structured, chunk_size = 500, chunk_overlap = 150
             for text in text_chunks:
                 chunks.append(
                     Document(
-                        page_content=text,
-                        metadata={**doc.metadata}  # copy metadata
+                        page_content=text.page_content,
+                        metadata={**doc.metadata, **text.metadata}  
                     )
                 )            
     else:
@@ -124,7 +139,7 @@ def split_documents(documents, structured, chunk_size = 500, chunk_overlap = 150
     return chunks
 
 
-# Embedding Manager to convert the chunks into embeddings
+# Converting the chunks into embeddings
 class EmbeddingManager:
     def __init__(
         self,
@@ -135,11 +150,7 @@ class EmbeddingManager:
         self.model = SentenceTransformer(model_name, device=device)
         self.normalize = normalize
 
-    def embed(
-        self,
-        texts,
-        batch_size = 32
-    ) -> np.ndarray:
+    def embed(self,texts,batch_size = 32):
         return self.model.encode(
             texts,
             batch_size=batch_size,
@@ -148,12 +159,17 @@ class EmbeddingManager:
         )
 
 
-# Vector Store to store the embeddings
+# Storing the embeddings
 class VectorStore:
     def __init__(self, persist_dir="../data/vector_store"):
         self.client = chromadb.PersistentClient(path=persist_dir)
         self.collection = self.client.get_or_create_collection(name="ev_documents")
         logger.info(f"Connected to vector store at {persist_dir}")
+
+    def reset(self):
+        self.client.delete_collection("ev_documents")
+        self.collection = self.client.get_or_create_collection("ev_documents")
+
 
     def add(self, documents, embeddings):
         self.collection.add(
@@ -164,7 +180,7 @@ class VectorStore:
         )
 
 
-# Query Rewriter to improve query relevance
+# Improving query relevance
 class QueryRewriter:
     
     def __init__(self, llm: ChatGroq):
@@ -173,12 +189,12 @@ class QueryRewriter:
     def rewrite_query(self, query, chat_history):
         """
         Rewrite the query to be standalone using conversation context.
-        Handles pronouns, references, and implicit context.
+        To particularly take care of pronouns, references, and implicit context.
         """
         if not chat_history:
             return query
         
-        # Only use last 3 turns for context (avoid token overflow)
+        # Only use last 3 turns for context to avoid token overflow
         recent_history = chat_history[-6:]  
         
         history_text = "\n".join([
@@ -217,12 +233,7 @@ class RAGRetriever:
         logger.info("RAG Retriever initialized with reranking")
 
     def retrieve(self, query, initial_k= 20, top_k = 5):
-        """
-        Two-stage retrieval:
-        - Fast vector search for recall
-        - Cross-encoder reranking for precision
-        """
-
+        """Retrieve and then rerank documents for the given query"""
         try:
             query_emb = self.embedder.embed([query])[0]
 
@@ -261,7 +272,7 @@ class RAGRetriever:
             return []
 
     def _rerank_documents(self, query: str, docs: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
-        """Rerank documents using cross-encoder"""
+        """Rerank documents using a cross-encoder"""
         if not docs:
             return []
         
@@ -284,6 +295,7 @@ def extract_citations(retrieved_docs):
 
     for doc in retrieved_docs:
         source, page = doc["metadata"]["source"], doc["metadata"]["page"]
+        print(source, page)
         if (source, page) not in seen:
             seen.add((source, page))
             citations.append(f"{source}, page {page}")
@@ -291,7 +303,7 @@ def extract_citations(retrieved_docs):
     return citations
 
 
-# RAG with Memory
+# RAG 
 def rag_with_memory(
     query: str,
     retriever,
@@ -301,11 +313,8 @@ def rag_with_memory(
     initial_k=20,
     top_k=5
 ):
-    """
-    Production-grade RAG with memory and LLM-based grounding verification.
-    """
 
-    # Query rewriting (optional)
+    # Query rewriting 
     retrieval_query = query
     if query_rewriter and chat_history:
         retrieval_query = query_rewriter.rewrite_query(query, chat_history)
@@ -326,7 +335,7 @@ Query: "{query}"
     except Exception:
         intent = "RAG"
 
-    # General chat (no retrieval)
+    # General chat -> no retrieval
     if intent == "GENERAL":
         general_prompt = f"""
 You are a friendly EV assistant.
@@ -345,7 +354,7 @@ User Question: {query}
         ]
         return answer, updated_history, []
 
-    # Step 3: Retrieve documents
+    # Retrieve documents
     try:
         retrieved_docs = retriever.retrieve(
             retrieval_query,
@@ -356,6 +365,7 @@ User Question: {query}
         retrieved_docs = []
 
     # Relevance filtering
+    RELEVANCE_LENGTH_THRESHOLD = 80
     relevant_docs = [
         d for d in retrieved_docs
         if d.get("content") and len(d["content"].strip()) >= RELEVANCE_LENGTH_THRESHOLD
@@ -481,13 +491,6 @@ def build_context(
     max_tokens=1200,
     approx_tokens_per_char=0.25
 ):
-    """
-    Minimal, robust context builder:
-    - Deduplicates identical chunks
-    - Adds inline metadata
-    - Enforces a token budget
-    """
-
     seen_contents = set()
     context_blocks = []
     total_tokens = 0
@@ -495,12 +498,12 @@ def build_context(
     for d in docs:
         content = d["content"].strip()
 
-        # 1️⃣ Deduplicate identical chunks
+        # Remove identical chunks
         if content in seen_contents:
             continue
         seen_contents.add(content)
 
-        # 2️⃣ Inline metadata
+        # Inline metadata
         source = d["metadata"].get("source", "unknown")
         page = d["metadata"].get("page", "N/A")
 
@@ -509,7 +512,7 @@ def build_context(
             f"{content}"
         )
 
-        # 3️⃣ Token budget check (cheap approximation)
+        # Token budget check
         block_tokens = int(len(block) * approx_tokens_per_char)
         if total_tokens + block_tokens > max_tokens:
             break
@@ -518,4 +521,3 @@ def build_context(
         total_tokens += block_tokens
 
     return "\n\n".join(context_blocks)
-

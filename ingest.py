@@ -1,11 +1,3 @@
-"""
-Ingestion script for EV-Assist RAG system.
-
-This script is intended to be run offline whenever PDFs are added or updated.
-It loads PDFs, splits them into chunks, generates embeddings, and stores them
-in a persistent vector database for fast retrieval at query time.
-"""
-
 import logging
 from rag_backend import (
     process_all_pdfs,
@@ -15,8 +7,8 @@ from rag_backend import (
 )
 
 # Configuration
-PDF_DIR = "data"                      # Directory containing PDFs
-PERSIST_DIR = "../data/vector_store"  # Where embeddings will be stored
+PDF_DIR = "data"                      
+PERSIST_DIR = "../vector_store" 
 
 # Logging setup
 logging.basicConfig(
@@ -45,12 +37,15 @@ def main():
         # Initialize embedding model
         embedder = EmbeddingManager(
             model_name="all-MiniLM-L6-v2",
-            device="cpu",   # switch to "cuda" if GPU is available
+            device="cpu",   
             normalize=True
         )
 
         # Initialize vector store
         store = VectorStore(persist_dir=PERSIST_DIR)
+
+        # Clear existing data
+        store.reset() 
 
         # Generate embeddings
         texts = [chunk.page_content for chunk in chunks]
@@ -65,6 +60,13 @@ def main():
         logger.info("Embeddings successfully added to vector store")
 
         logger.info("Ingestion completed successfully!")
+
+        print("Total vectors:", store.collection.count())
+
+        sources = set(
+            m["source"] for m in store.collection.get()["metadatas"]
+        )
+        print("Sources in DB:", sources)
 
     except Exception as e:
         logger.error("Ingestion failed", exc_info=True)

@@ -55,13 +55,11 @@ with st.sidebar:
         - Knowledge from EV documents
         - Conversation memory
         - Source citations
-        - Powered by Llama 3.3 70B
         """)
     
     with st.expander("Example Questions"):
         st.markdown("""
         - What are the charging options?
-        - Tell me about EV incentives
         """)
 
 # Main Chat Interface
@@ -75,7 +73,7 @@ if "chat_history" not in st.session_state:
 if not st.session_state.chat_history:
     st.info("Hi! I'm your EV assistant. Ask me anything about electric vehicles!")
 
-# Render chat history
+# Rendering the chat history
 for turn in st.session_state.chat_history:
     with st.chat_message(turn["role"]):
         st.markdown(turn["content"])
@@ -142,4 +140,3 @@ if query:
 
 # Footer
 st.markdown("---")
-st.caption("Powered by RAG • Llama 3.3 70B •")

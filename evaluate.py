@@ -32,7 +32,6 @@ def semantic_match(a, b, threshold=0.6):
 
 
 def evaluate_retrieval(eval_questions: List[Dict], initial_k: int = 20, top_k: int = 5):
-    """Evaluate retrieval performance"""
     stats = {
         "hit@1": 0,
         "hit@3": 0,
@@ -48,7 +47,7 @@ def evaluate_retrieval(eval_questions: List[Dict], initial_k: int = 20, top_k: i
     for q in eval_questions:
         retrieved = retriever.retrieve(q["question"], initial_k=initial_k, top_k=top_k)
 
-        # NEGATIVE QUESTIONS (should return nothing)
+        # NEGATIVE QUESTIONS -> return nothing
         if q["source_hint"] is None:
             stats["total_negative"] += 1
             if len(retrieved) == 0:
