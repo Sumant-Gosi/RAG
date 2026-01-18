@@ -45,14 +45,18 @@ The RAG pipeline follows a **retrieve → rerank → generate** workflow:
 
 ## Project Structure
 
-├── data/ # Input PDF documents
-├── vector_store/ # Persistent ChromaDB storage
-├── ingest.py # Document ingestion pipeline
-├── rag_backend.py # Retrieval, reranking, and RAG logic
-├── rag_api.py # FastAPI backend
-├── streamlit_app.py # Streamlit frontend
+```
+.
+├── data/                  # Input PDF documents
+├── vector_store/           # Persistent ChromaDB storage
+├── ingest.py               # Document ingestion pipeline
+├── rag_backend.py          # Retrieval, reranking, and RAG logic
+├── rag_api.py              # FastAPI backend
+├── streamlit_app.py        # Streamlit frontend
 ├── requirements.txt
 └── README.md
+```
+
 
 
 ---
@@ -74,3 +78,5 @@ uvicorn rag_api:app --reload
 
 ### 5. Start the frontend UI
 streamlit run streamlit_app.py
+
+
