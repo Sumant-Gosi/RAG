@@ -79,4 +79,5 @@ uvicorn rag_api:app --reload
 ### 5. Start the frontend UI
 streamlit run streamlit_app.py
 
+<img width="1408" height="653" alt="Screenshot 2026-01-18 at 16 33 50" src="https://github.com/user-attachments/assets/f15825c5-d158-4767-91fe-4ece3b63c665" />
 
